@@ -1,0 +1,28 @@
+PATH
+  remote: .
+  specs:
+    redis-stream (0.1.0)
+      moneta (~> 1.2)
+      multi_json (~> 1.14)
+      redis (= 4.1.3)
+
+GEM
+  remote: https://rubygems.org/
+  specs:
+    minitest (5.13.0)
+    moneta (1.2.1)
+    multi_json (1.14.1)
+    rake (10.5.0)
+    redis (4.1.3)
+
+PLATFORMS
+  java
+
+DEPENDENCIES
+  bundler (~> 2.0)
+  minitest (~> 5.0)
+  rake (~> 10.0)
+  redis-stream!
+
+BUNDLED WITH
+   2.1.4
