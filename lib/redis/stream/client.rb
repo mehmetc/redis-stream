@@ -29,7 +29,7 @@ class Redis
         port = options["port"]
         db = options["db"]
         @logger = options["logger"]
-        @cache = Redis::Stream::DataCache.new
+        @cache = options.include?('caching') && options['caching'] ? Redis::Stream::DataCache.new : nil
 
         @name = name
         @state = Redis::Stream::State::IDLE
@@ -182,29 +182,31 @@ class Redis
 
         payload = nil
 
-        if options["cache_key"].nil?
-          cache_key = @cache.build_key(data)
-          if @cache.include?(cache_key)
-            if data && data.include?('from_cache') && data['from_cache'].eql?(0)
-              @cache.delete(cache_key)
-              @logger.info("#{@consumer_id} - invalidating cache with key #{cache_key}")
-            else
-              payload = {
-                  type: type,
-                  from: to,
-                  from_group: group,
-                  to: @consumer_id,
-                  to_group: @group,
-                  payload: @cache[cache_key].to_json
-              }
-              @logger.info("#{@consumer_id} - fetching from cache with key #{cache_key}")
+        unless @cache.nil?
+          if options["cache_key"].nil?
+            cache_key = @cache.build_key(data)
+            if @cache.include?(cache_key)
+              if data && data.include?('from_cache') && data['from_cache'].eql?(0)
+                @cache.delete(cache_key)
+                @logger.info("#{@consumer_id} - invalidating cache with key #{cache_key}")
+              else
+                payload = {
+                    type: type,
+                    from: to,
+                    from_group: group,
+                    to: @consumer_id,
+                    to_group: @group,
+                    payload: @cache[cache_key].to_json
+                }
+                @logger.info("#{@consumer_id} - fetching from cache with key #{cache_key}")
+              end
+
             end
-
+          else
+            @cache[options["cache_key"]] = data
           end
-        else
-          @cache[options["cache_key"]] = data
-        end
 
+        end
         if payload.nil?
           payload = {
               type: type,

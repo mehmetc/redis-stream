@@ -38,8 +38,8 @@ class Redis::StreamTest < Minitest::Test
   end
 
   def test_sync_stream
-    s1 = Redis::Stream::Client.new('test', "HTTP", "http_agent", "sync_start" => true)
-    s2 = Redis::Stream::Client.new("test", "MANIFEST", 'manifest_client')
+    s1 = Redis::Stream::Client.new('test', "HTTP", "http_agent", "sync_start" => true, "caching" => false)
+    s2 = Redis::Stream::Client.new("test", "MANIFEST", 'manifest_client', "caching" => false)
 
     s2.on_message do |message|
       m = message
