@@ -1,8 +1,7 @@
 # Redis::Stream
+### !!!Use jRuby for now. It has a weird bug in cruby
 
-Welcome to your new gem! In this directory, you'll find the files you need to be able to package up your Ruby library into a gem. Put your Ruby code in the file `lib/redis/stream`. To experiment with that code, run `bin/console` for an interactive prompt.
-
-TODO: Delete this and the text above, and describe your gem
+Sugar coating Redis Streams
 
 ## Installation
 
@@ -22,7 +21,32 @@ Or install it yourself as:
 
 ## Usage
 
-TODO: Write usage instructions here
+A simple non-blocking example
+```ruby
+require 'redis-stream'
+s1 =  Redis::Stream::Client.new("test", "LIST", 't1')
+s2 =  Redis::Stream::Client.new("test", "MANIFEST", 't2')
+
+s2.on_message do |message|
+  m = message['payload']
+  puts "Hello #{m}"
+  s1.stop
+  s2.stop
+end
+
+s1.start(false)
+s2.start(false)
+
+id = s1.add("World!", "to" => "*", "group" => "MANIFEST", "type" => Redis::Stream::Type::ACTION)
+
+Timeout::timeout(10) do
+  loop do
+    break unless s1.running? || s2.running?
+    sleep 1
+    puts "checkin if still active #{s1.running?}, #{s2.running?}"
+  end
+end
+```
 
 ## Development
 
