@@ -3,5 +3,8 @@ os: linux
 language: ruby
 cache: bundler
 rvm:
-  - jruby-9.2.9.0
+  - 2.5
+  - jruby
+services:
+  - redis
 before_install: gem install bundler -v 2.0.1
