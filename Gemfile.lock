@@ -1,7 +1,7 @@
 PATH
   remote: .
   specs:
-    redis-stream (0.2.0)
+    redis-stream (0.3.0)
       moneta (~> 1.2)
       multi_json (~> 1.14)
       redis (= 4.1.3)

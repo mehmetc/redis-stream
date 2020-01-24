@@ -22,8 +22,10 @@ class Redis
       # Example: Redis::Stream::Client.new("resolver", "stream", {"logger" => Logger.new(STDOUT)})
       # if group is nil or not supplied then no rstream group will be setup
       def initialize(stream_name, group_name = nil, name = rand(36 ** 7).to_s(36), options = {})
-        default_options = {"host" => "127.0.0.1", "port" => 6379, "db" => 0, "logger" => Logger.new(STDOUT)}
+        default_options = {"host" => "127.0.0.1", "port" => 6379, "db" => 0, "config_file_path" => '.', "logger" => Logger.new(STDOUT)}
         options = default_options.merge(options)
+
+        Redis::Stream::Config.path = options['config_file_path']
 
         host = options["host"]
         port = options["port"]
@@ -36,8 +38,13 @@ class Redis
         @stream = stream_name
         @group = group_name
         if options.include?('redis')
+          @logger.info("Taking REDIS as a parameter")
           @redis = options['redis']
+        elsif Redis::Stream::Config.file_exists? && Redis::Stream::Config.include?(:redis)
+          @logger.info("Taking REDIS from config file")
+          @redis = Redis.new(Redis::Stream::Config[:redis])
         else
+          @logger.info("Instantiating REDIS")
           @redis = Redis.new(host: host, port: port, db: db)
         end
         @consumer_id = "#{@name}-#{@group}-#{Process.pid}"

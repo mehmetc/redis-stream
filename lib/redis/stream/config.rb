@@ -6,6 +6,19 @@ class Redis
     class Config
       @config = {}
       @config_file_path = ""
+      @config_file_name = 'config.yml'
+
+      #get name of config file
+      # @return [String]    get name of config file
+      def self.name
+        @config_file_name
+      end
+
+      #set config file name defaults to config.yml
+      # @param [String] config_file_name      Name of config file
+      def self.name=(config_file_name)
+        @config_file_name = config_file_name
+      end
 
       # return the current location of the config.yml file
       # @return [String] path of config.yml
@@ -34,7 +47,7 @@ class Redis
       def self.[]=(key, value)
         init
         @config[key] = value
-        File.open("#{path}/config.yml", 'w') do |f|
+        File.open("#{path}/#{name}", 'w') do |f|
           f.puts @config.to_yaml
         end
       end
@@ -53,9 +66,16 @@ class Redis
       def self.init
         discover_config_file_path
         if @config.empty?
-          config = YAML::load_file("#{path}/config.yml")
+          config = YAML::load_file("#{path}/#{name}")
           @config = process(config)
         end
+      end
+
+      # check if config file is present on system
+      # @return [TrueClass, FalseClass]
+      def self.file_exists?
+        discover_config_file_path
+        File.exists?("#{path}/#{name}")
       end
 
       private
@@ -63,9 +83,9 @@ class Redis
       #determine location of config.yml file
       def self.discover_config_file_path
         if @config_file_path.nil? || @config_file_path.empty?
-          if File.exist?('config.yml')
+          if File.exist?(name)
             @config_file_path = '.'
-          elsif File.exist?("config/config.yml")
+          elsif File.exist?("config/#{name}")
             @config_file_path = 'config'
           end
         end

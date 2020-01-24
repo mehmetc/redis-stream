@@ -22,9 +22,53 @@ Or install it yourself as:
 
 ## Usage
 
+Load the stream library
+```ruby
+require 'redis/stream'
+```
+Available objects
+### Redis::Stream::Config
+Simple way to read and manage a config file. It looks for a config.yml file in the current and './config' directory.
+#### _name_
+name defaults to config.yml
+```ruby 
+    include Redis::Stream
+    puts Config.name
+    Config.name = "test.yml"
+``` 
+#### _path_
+path to the config file
+```ruby 
+    include Redis::Stream
+    puts Config.path
+    Config.path = "./configDEV"
+```
+#### _[key]_
+reads and writes the key or key/value from/to the config file
+```ruby 
+    include Redis::Stream
+    puts Config[:cache]
+    Config[:cache] = "./cache"
+```
+
+#### include?(key)
+check if key exists in the config file
+#### file_exists?()
+check if the config file exists 
+#### _init_
+This function is called implicitly. You do not need to call it
+
+
+### Redis::Stream::Client
+### Redis::Stream::Inspect
+### Redis::Stream::Type
+### Redis::Stream::DataCache
+
+
+
 #### A simple non-blocking example
 ```ruby
-require 'redis-stream'
+require 'redis/stream'
 s1 =  Redis::Stream::Client.new("test", "LIST", 't1')
 s2 =  Redis::Stream::Client.new("test", "MANIFEST", 't2')
 
