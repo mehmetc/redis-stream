@@ -42,4 +42,5 @@ Gem::Specification.new do |spec|
   spec.add_dependency "redis", "4.1.3"
   spec.add_dependency "moneta", "~> 1.2"
   spec.add_dependency "multi_json", "~> 1.14"
+  spec.add_dependency "zipkin-tracer", "~> 0.43"
 end
