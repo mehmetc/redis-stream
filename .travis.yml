@@ -5,6 +5,5 @@ cache: bundler
 rvm:
   - 2.5
   - jruby
-services:
-  - redis
 before_install: gem install bundler -v 2.0.1
+before_script: sudo redis-server /etc/redis/redis.conf --port 7000

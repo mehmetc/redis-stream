@@ -11,7 +11,7 @@ module ZipkinTracer
     end
 
     def trace(topic, span=nil)
-      if @tracer.is_a?(Trace::NullSender)
+      if @tracer.nil? || @tracer.class.name.eql?("Trace::NullSender")
         yield nil if block_given?
       else
         trace_id = trace_id_from_span(span)
@@ -28,15 +28,21 @@ module ZipkinTracer
           end
         end
       end
+    rescue Exception => e
+      @stream.logger.error(e.message)
+      return nil
     end
 
     def trace_error(msg, span = nil)
-      if @tracer.is_a?(Trace::NullSender)
+      if @tracer.nil? || @tracer.class.name.eql?("Trace::NullSender")
         yield nil if block_given?
       else
         span.record_tag(Trace::Span::Tag::ERROR, msg)
         yield span if block_given?
       end
+    rescue Exception => e
+      @stream.logger.error(e.message)
+      return nil
     end
 
     private
@@ -59,6 +65,9 @@ module ZipkinTracer
       end
 
       Trace::TraceId.new(trace_id, parent_span_id, span_id, sampled, flags, shared)
+    rescue Exception => e
+      @stream.logger.error(e.message)
+      return nil
     end
 
 
