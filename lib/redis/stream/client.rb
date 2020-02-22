@@ -6,7 +6,7 @@ require "thread"
 require "redis/stream/inspect"
 require "redis/stream/config"
 require "redis/stream/data_cache"
-require "redis/stream/tracer/zipkin_tracer"
+require "zipkin/tracer"
 
 class Redis
   module Stream
@@ -29,7 +29,8 @@ class Redis
                            "db" => 0,
                            "config_file_path" => '.',
                            "logger" => Logger.new(STDOUT),
-                           "zipkin_config" => {}}
+                           "tracer" => nil
+        }
         options = default_options.merge(options)
 
         Redis::Stream::Config.path = options['config_file_path']
@@ -39,7 +40,6 @@ class Redis
         db = options["db"]
         @logger = options["logger"]
         @cache = options.include?('caching') && options['caching'] ? Redis::Stream::DataCache.new : nil
-        @tracer = ZipkinTracer::RedisStreamHandler.new(self, options["zipkin_config"])
         @name = name
         @state = Redis::Stream::State::IDLE
         @stream = stream_name
@@ -60,21 +60,18 @@ class Redis
 
         raise "No redis" if @redis.nil?
 
+        if options.has_key?('tracer') && !options['tracer'].nil?
+          OpenTracing.global_tracer = options["tracer"]
+        elsif Redis::Stream::Config.include?(:zipkin)
+          OpenTracing.global_tracer = Zipkin::Tracer.build(url: Redis::Stream::Config[:zipkin], service_name: "#{@name}-#{@group}", flush_interval: 1)
+        end
+
         @state = Redis::Stream::State::RUNNING if options.include?("sync_start") && options["sync_start"]
         setup_stream
 
         @last_id = info['last-generated-id'] rescue '0'
         @logger.info "#{@consumer_id} - Last ID = #{@last_id}"
       end
-
-      def trace(topic, span = nil, &block)
-        @tracer.trace(topic, span, &block)
-      end
-
-      def trace_error(msg, span, &block)
-        @tracer.trace_error(msg, span, &block)
-      end
-
 
       # add: add a message to the stream
       # @param [Object] data                    Any data you want to transmit
@@ -84,7 +81,7 @@ class Redis
       def add(data = {}, options = {})
         raise "Client isn't running" unless @state.eql?(Redis::Stream::State::RUNNING)
 
-        default_options = {"to" => "*", "group" => "*", "type" => Redis::Stream::Type::ACTION, "cache_key" => nil}
+        default_options = {"to" => "*", "group" => "*", "type" => Redis::Stream::Type::ACTION, "cache_key" => nil, "tracer" => nil}
         options = default_options.merge(options)
 
         type = options["type"]
@@ -104,7 +101,7 @@ class Redis
       def sync_add(data = {}, options = {})
         raise "Client isn't running" unless @state.eql?(Redis::Stream::State::RUNNING)
 
-        default_options = {"to" => "*", "group" => "*", "type" => Redis::Stream::Type::ACTION, "time_out" => 5, "passthrough" => false, "cache_key" => nil}
+        default_options = {"to" => "*", "group" => "*", "type" => Redis::Stream::Type::ACTION, "time_out" => 5, "passthrough" => false, "cache_key" => nil, "tracer" => nil}
         options = default_options.merge(options)
 
         to = options["to"]
@@ -114,7 +111,7 @@ class Redis
 
         #@state = Redis::Stream::State::RUNNING
         data_out = nil
-        add_id = add(data, "to" => to, "group" => group, "type" => options["type"], "cache_key" => options["cache_key"])
+        add_id = add(data, "to" => to, "group" => group, "type" => options["type"], "cache_key" => options["cache_key"], "tracer" => options['tracer'])
 
         time = Time.now
 
@@ -188,14 +185,39 @@ class Redis
         end
       end
 
+      def trace(operation_name, parent_scope = nil)
+        # span = OpenTracing.start_span(operation_name)
+        # yield span if block_given?
+        # span.finish
 
+        # active_scope = OpenTracing.scope_manager.active
+        if parent_scope.is_a?(Zipkin::Scope)
+          OpenTracing.start_active_span(operation_name, child_of: parent_scope.span) do |scope|
+            yield scope if block_given?
+          end
+        else
+          OpenTracing.start_active_span(operation_name) do |scope|
+            yield scope if block_given?
+          end
+        end
+      end
+
+      def trace_error(operation_name, span = nil)
+        trace(operation_name, span)
+      end
       private
 
       def build_payload(data, options)
         to = options['to']
         group = options['group']
         type = options['type']
-
+        tracer_data = {}
+        if options['tracer'].nil?
+          tracer_data = nil
+        else
+          tracer_span = options['tracer']
+          OpenTracing.inject(tracer_span.context, OpenTracing::FORMAT_TEXT_MAP, tracer_data)
+        end
         payload = nil
 
         unless @cache.nil?
@@ -212,6 +234,7 @@ class Redis
                     from_group: group,
                     to: @consumer_id,
                     to_group: @group,
+                    tracer: tracer_data.to_json,
                     payload: @cache[cache_key].to_json
                 }
                 @logger.info("#{@consumer_id} - fetching from cache with key #{cache_key}")
@@ -230,6 +253,7 @@ class Redis
               from_group: @group,
               to: to,
               to_group: group,
+              tracer: tracer_data.to_json,
               payload: data.to_json
           }
         end
@@ -288,6 +312,12 @@ class Redis
             id, data_out = result[@stream][0]
             ack_count = @redis.xack(@stream, @group, id) if @group
 
+            tracer_data = JSON.parse(data_out["tracer"])
+            unless tracer_data.nil? || tracer_data.empty?
+              tracer_span = OpenTracing.extract(OpenTracing::FORMAT_TEXT_MAP, tracer_data)
+              data_out["tracer"] = OpenTracing.start_active_span(@consumer_id, child_of: tracer_span)
+            end
+
             begin
               data_out["payload"] = JSON.parse(data_out["payload"])
             rescue Exception => e
@@ -303,7 +333,7 @@ class Redis
             #   end
             # end
 
-            if (data_out["from"].eql?(@consumer_id))
+            if data_out["from"].eql?(@consumer_id)
               return false
             end
 

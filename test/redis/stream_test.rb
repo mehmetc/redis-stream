@@ -69,29 +69,21 @@ class Redis::StreamTest < Minitest::Test
 
   def test_zipkin
     s1 = Redis::Stream::Client.new('test', "HTTP", "http_agent", "sync_start" => true, "caching" => false)
-    s2 = Redis::Stream::Client.new("test", "MANIFEST", 'manifest_client', "caching" => false, "zipkin_config" => {
-        service_name: 'manifest_client',
-        json_api_host: 'http://127.0.0.1:9411',
-        sampled_as_boolean: false,
-        sample_rate: 1.0
-    })
+    s2 = Redis::Stream::Client.new("test", "MANIFEST", 'manifest_client', "caching" => false)
 
 
     s2.on_message do |message|
-      s2.trace('on_message') do |span|
-      m = message
-      id = s2.add("world", "to" => "*", "group" => "HTTP", "type" => Redis::Stream::Type::ACTION)
-        span.record("return_message")
-        span.record_tag("data", "world")
-        s2.trace_error("this is an error", span) do |error_span|
-          error_span.record("error block")
-          error_span.record_tag('warpdrive_state', 'offline')
-        end
+      s2.trace('on_message', message['tracer']) do |scope|
+      #OpenTracing.start_active_span('on_message') do |scope|
+      #span = OpenTracing.start_span('on_message', :tags => {'data' => 'world'})
+        scope.span.set_tag("data", "world")
 
-      s2.trace("get_manifest", span) do |mspan|
-        mspan.record_tag('manifest_type','iiif')
-      end
-      assert_equal(3, span.annotations.size)
+        id = s2.add("world", "to" => "*", "group" => "HTTP", "type" => Redis::Stream::Type::ACTION, "tracer" => scope.span)
+
+        s2.trace("get_manifest", scope) do |mscope|
+          mscope.span.set_tag('manifest_type','iiif')
+        end
+        # assert_equal(1, scope.span.tags.size)
       end
     end
 

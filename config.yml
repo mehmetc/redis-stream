@@ -1,3 +1,4 @@
 data_cache: "/Users/mehmetc/Tmp/resolver/data_cache"
+zipkin: "http://127.0.0.1:9411"
 redis:
   url: "redis://127.0.0.1:7000/0"
