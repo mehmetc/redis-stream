@@ -74,23 +74,23 @@ class Redis::StreamTest < Minitest::Test
 
     s2.on_message do |message|
       s2.trace('on_message', message['tracer']) do |scope|
-      #OpenTracing.start_active_span('on_message') do |scope|
-      #span = OpenTracing.start_span('on_message', :tags => {'data' => 'world'})
         scope.span.set_tag("data", "world")
 
         id = s2.add("world", "to" => "*", "group" => "HTTP", "type" => Redis::Stream::Type::ACTION, "tracer" => scope.span)
+        scope.span.set_tag('id', id)
 
         s2.trace("get_manifest", scope) do |mscope|
           mscope.span.set_tag('manifest_type','iiif')
         end
-        # assert_equal(1, scope.span.tags.size)
+        scope.span.set_tag('error', 'oops')
+        assert_equal(3, scope.span.tags.size)
       end
     end
 
     s2.start(false)
     result = s1.sync_add("hello", "to" => "*", "group" => "MANIFEST", "type" => Redis::Stream::Type::ACTION)
 
-    pp result
+    assert_equal('world', result['payload'])
     s1.stop
     s2.stop
     Timeout::timeout(10) do

@@ -80,18 +80,19 @@ class Redis
       # no passthrough variable here. The passthrough is available in the start method
       def add(data = {}, options = {})
         raise "Client isn't running" unless @state.eql?(Redis::Stream::State::RUNNING)
+        add_id = nil
+        OpenTracing.start_active_span('add') do |scope|
+          default_options = {"to" => "*", "group" => "*", "type" => Redis::Stream::Type::ACTION, "cache_key" => nil, "tracer" => nil}
+          options = default_options.merge(options)
 
-        default_options = {"to" => "*", "group" => "*", "type" => Redis::Stream::Type::ACTION, "cache_key" => nil, "tracer" => nil}
-        options = default_options.merge(options)
+          type = options["type"]
+          to = options["to"]
+          group = options["group"]
+          payload = build_payload(data, options)
+          add_id = @redis.xadd(@stream, payload)
 
-        type = options["type"]
-        to = options["to"]
-        group = options["group"]
-        payload = build_payload(data, options)
-        add_id = @redis.xadd(@stream, payload)
-        #  @send_queue << add_id
-
-        @logger.info("#{@consumer_id} - send to '#{to}' in group '#{group}' with id '#{add_id}' of type '#{type}'")
+          @logger.info("#{@consumer_id} - send to '#{to}' in group '#{group}' with id '#{add_id}' of type '#{type}'")
+        end
         add_id
       end
 
@@ -202,9 +203,6 @@ class Redis
         end
       end
 
-      def trace_error(operation_name, span = nil)
-        trace(operation_name, span)
-      end
       private
 
       def build_payload(data, options)
@@ -221,7 +219,7 @@ class Redis
         payload = nil
 
         unless @cache.nil?
-          if options["cache_key"].nil?
+          if options.include?("cache_key")
             cache_key = @cache.build_key(data)
             if @cache.include?(cache_key)
               if data && data.include?('from_cache') && data['from_cache'].eql?(0)
@@ -242,6 +240,7 @@ class Redis
 
             end
           else
+            @logger.info("#{@consumer_id} - fetching from cache with key #{cache_key}")
             @cache[options["cache_key"]] = data
           end
 
@@ -304,61 +303,53 @@ class Redis
       # @param [Boolean] async          return the message if synchronous else call handle_incoming
       # @param [Boolean] passthrough    Receive all messages also the ones intended for other consumers
       def read_next_message_from_stream(async = true, passthrough = false)
-        if @state == Redis::Stream::State::RUNNING
-          result = @redis.xread(@stream, @lastid, block: 1000, count: 1) if @group.nil?
-          result = @redis.xreadgroup(@group, @consumer_id, @stream, '>', block: 1000, count: 1) if @group
+          if @state == Redis::Stream::State::RUNNING
+            result = @redis.xread(@stream, @lastid, block: 1000, count: 1) if @group.nil?
+            result = @redis.xreadgroup(@group, @consumer_id, @stream, '>', block: 1000, count: 1) if @group
 
-          unless result.empty?
-            id, data_out = result[@stream][0]
-            ack_count = @redis.xack(@stream, @group, id) if @group
+            unless result.empty?
+              id, data_out = result[@stream][0]
+              ack_count = @redis.xack(@stream, @group, id) if @group
 
-            tracer_data = JSON.parse(data_out["tracer"])
-            unless tracer_data.nil? || tracer_data.empty?
-              tracer_span = OpenTracing.extract(OpenTracing::FORMAT_TEXT_MAP, tracer_data)
-              data_out["tracer"] = OpenTracing.start_active_span(@consumer_id, child_of: tracer_span)
+              tracer_data = JSON.parse(data_out["tracer"])
+              unless tracer_data.nil? || tracer_data.empty?
+                #trace_scope.span.log_kv('has_tracer' => true)
+                tracer_span = OpenTracing.extract(OpenTracing::FORMAT_TEXT_MAP, tracer_data)
+                data_out["tracer"] = OpenTracing.start_span(@consumer_id, child_of: tracer_span)
+              end
+
+              begin
+                data_out["payload"] = JSON.parse(data_out["payload"])
+              rescue Exception => e
+                @logger.error("#{@consumer_id} error parsing payload: #{e.message}")
+              end
+
+              if data_out["from"].eql?(@consumer_id)
+                return false
+              end
+
+              unless (data_out["to"].nil? || data_out["to"].eql?('') || data_out["to"].eql?('*') || data_out["to"].eql?(@consumer_id)) &&
+                  (data_out["to_group"].nil? || data_out["to_group"].eql?('') || data_out["to_group"].eql?('*') || data_out["to_group"].eql?(@group))
+                @logger.info("#{@consumer_id} - ignoring message from '#{data_out["from"]}' to '#{data_out["to"]}-#{data_out["to_group"]}'")
+
+                return false
+              end
+
+              @logger.info("#{@consumer_id} - received from '#{data_out["from"]}' of type '#{data_out['type']}' to '#{data_out["to"]}' in group '#{data_out["to_group"]}' with message id '#{id}' - with ack #{ack_count}")
+
+              if data_out["type"].eql?(Redis::Stream::Type::PING)
+                add(data_out["payload"].to_s, "to" => data_out["from"], "group" => "*", "type" => Redis::Stream::Type::PONG)
+                return false
+              end
+
+              if data_out["type"].eql?(Redis::Stream::Type::PONG)
+                return false
+              end
+
+              return data_out unless async
+              handle_incoming(data_out)
             end
-
-            begin
-              data_out["payload"] = JSON.parse(data_out["payload"])
-            rescue Exception => e
-              @logger.error("#{@consumer_id} error parsing payload: #{e.message}")
-            end
-
-            # if @send_queue.include?(id)
-            #   @send_queue.delete(id)
-            #   @logger.warning("#{@consumer_id} - send queue is not empty: #{@send_queue.join(',')}") if @send_queue.length > 0
-            #   unless passthrough
-            #     #@logger.info("#{@consumer_id} - ignoring self")
-            #     return false
-            #   end
-            # end
-
-            if data_out["from"].eql?(@consumer_id)
-              return false
-            end
-
-            unless (data_out["to"].nil? || data_out["to"].eql?('') || data_out["to"].eql?('*') || data_out["to"].eql?(@consumer_id)) &&
-                (data_out["to_group"].nil? || data_out["to_group"].eql?('') || data_out["to_group"].eql?('*') || data_out["to_group"].eql?(@group))
-              @logger.info("#{@consumer_id} - ignoring message from '#{data_out["from"]}' to '#{data_out["to"]}-#{data_out["to_group"]}'")
-
-              return false
-            end
-
-            @logger.info("#{@consumer_id} - received from '#{data_out["from"]}' of type '#{data_out['type']}' to '#{data_out["to"]}' in group '#{data_out["to_group"]}' with message id '#{id}' - with ack #{ack_count}")
-
-            if data_out["type"].eql?(Redis::Stream::Type::PING)
-              add(data_out["payload"].to_s, "to" => data_out["from"], "group" => "*", "type" => Redis::Stream::Type::PONG)
-              return false
-            end
-
-            if data_out["type"].eql?(Redis::Stream::Type::PONG)
-              return false
-            end
-
-            return data_out unless async
-            handle_incoming(data_out)
           end
-        end
       rescue Exception => e
         return false
       end
