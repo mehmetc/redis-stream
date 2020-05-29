@@ -1,5 +1,6 @@
 #encoding: UTF-8
 require "redis"
+require "connection_pool"
 require "logger"
 require "json"
 require "thread"
@@ -13,7 +14,7 @@ class Redis
     class Client
       include Redis::Stream::Inspect
 
-      attr_reader :logger, :name, :group, :stream, :consumer_id, :cache, :redis, :non_blocking
+      attr_reader :logger, :name, :group, :stream, :consumer_id, :cache, :redis_pool, :non_blocking
 
       # Initialize: setup rstream
       # @param [String] stream_name        name of the rstream
@@ -46,19 +47,19 @@ class Redis
         @group = group_name
         if options.include?('redis')
           @logger.info("Taking REDIS as a parameter")
-          @redis = options['redis']
+          @redis_pool = ConnectionPool.new(size: 10, timeout: 5) { options['redis'] }
         elsif Redis::Stream::Config.file_exists? && Redis::Stream::Config.include?(:redis)
           @logger.info("Taking REDIS from config file")
-          @redis = Redis.new(Redis::Stream::Config[:redis])
+          @redis_pool = ConnectionPool.new(size: 10, timeout: 5) { Redis.new(Redis::Stream::Config[:redis]) }
         else
           @logger.info("Instantiating REDIS")
-          @redis = Redis.new(host: host, port: port, db: db)
+          @redis_pool = ConnectionPool.new(size: 10, timeout: 5) { Redis.new(host: host, port: port, db: db) }
         end
         @consumer_id = "#{@name}-#{@group}-#{Process.pid}"
         @non_blocking = nil
         #  @send_queue = []
 
-        raise "No redis" if @redis.nil?
+        raise "No redis" if @redis_pool.nil? || @redis_pool.available == 0
 
         if options.has_key?('tracer') && !options['tracer'].nil?
           OpenTracing.global_tracer = options["tracer"]
@@ -89,7 +90,10 @@ class Redis
           to = options["to"]
           group = options["group"]
           payload = build_payload(data, options)
-          add_id = @redis.xadd(@stream, payload)
+          add_id = nil
+          @redis_pool.with do |redis|
+            add_id = redis.xadd(@stream, payload)
+          end
 
           @logger.info("#{@consumer_id} - send to '#{to}' in group '#{group}' with id '#{add_id}' of type '#{type}'")
         end
@@ -265,7 +269,9 @@ class Redis
       def setup_stream
         if @group
           begin
-            @redis.xgroup(:create, @stream, @group, '$', mkstream: true)
+            @redis_pool.with do |redis|
+              redis.xgroup(:create, @stream, @group, '$', mkstream: true)
+            end
             @logger.info("#{@consumer_id} - Group #{@group} created")
           rescue Redis::CommandError => e
             @logger.error("#{@consumer_id} - Group #{@group} exists")
@@ -306,13 +312,18 @@ class Redis
       # @param [Boolean] passthrough    Receive all messages also the ones intended for other consumers
       def read_next_message_from_stream(async = true, passthrough = false)
         if @state == Redis::Stream::State::RUNNING
-          result = @redis.xread(@stream, @lastid, block: 1000, count: 1) if @group.nil?
-          result = @redis.xreadgroup(@group, @consumer_id, @stream, '>', block: 1000, count: 1) if @group
+          result = nil
+          @redis_pool.with do |redis|
+            result = redis.xread(@stream, @lastid, block: 1000, count: 1) if @group.nil?
+            result = redis.xreadgroup(@group, @consumer_id, @stream, '>', block: 1000, count: 1) if @group
+          end
 
           unless result.empty?
             id, data_out = result[@stream][0]
-            ack_count = @redis.xack(@stream, @group, id) if @group
-
+            ack_count = 0
+            @redis_pool.with do |redis|
+              ack_count = redis.xack(@stream, @group, id) if @group
+            end
             tracer_data = JSON.parse(data_out["tracer"])
             unless tracer_data.nil? || tracer_data.empty?
               #trace_scope.span.log_kv('has_tracer' => true)
@@ -330,11 +341,13 @@ class Redis
               return false
             end
 
-            unless (data_out["to"].nil? || data_out["to"].eql?('') || data_out["to"].eql?('*') || data_out["to"].eql?(@consumer_id)) &&
-                (data_out["to_group"].nil? || data_out["to_group"].eql?('') || data_out["to_group"].eql?('*') || data_out["to_group"].eql?(@group))
-              @logger.info("#{@consumer_id} - ignoring message from '#{data_out["from"]}' to '#{data_out["to"]}-#{data_out["to_group"]}'")
+            unless passthrough
+              unless (data_out["to"].nil? || data_out["to"].eql?('') || data_out["to"].eql?('*') || data_out["to"].eql?(@consumer_id)) &&
+                     (data_out["to_group"].nil? || data_out["to_group"].eql?('') || data_out["to_group"].eql?('*') || data_out["to_group"].eql?(@group))
+                @logger.info("#{@consumer_id} - ignoring message from '#{data_out["from"]}' to '#{data_out["to"]}-#{data_out["to_group"]}'")
 
-              return false
+                return false
+              end
             end
 
             @logger.info("#{@consumer_id} - received from '#{data_out["from"]}' of type '#{data_out['type']}' to '#{data_out["to"]}' in group '#{data_out["to_group"]}' with message id '#{id}' - with ack #{ack_count}")
@@ -345,7 +358,7 @@ class Redis
             end
 
             if data_out["type"].eql?(Redis::Stream::Type::PONG)
-              return false
+              return true
             end
 
             return data_out unless async

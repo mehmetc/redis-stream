@@ -104,9 +104,9 @@ class Redis::StreamTest < Minitest::Test
 
   def test_cache
     cache = Redis::Stream::DataCache.new
+    cache.key_prefix = 'cache'
     payload = {'id' => '1', 'action' => 'cache', 'from_cache' => '1'}
     cache.delete(cache.build_key(payload))
-
     metadata = cache.resolve_by_message("1", payload) do |pid, cache_key|
       assert_equal(payload['id'], pid)
       assert_equal('cache_1', cache_key)
